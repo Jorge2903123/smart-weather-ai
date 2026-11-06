@@ -1,0 +1,28 @@
+# Python & Entornos
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+*.env
+.env
+.env.local
+
+# Node & Frontend
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.vite/
+**/.vite/
+
+# Archivos de sistema y túneles
+.DS_Store
+Thumbs.db
+.cloudflared/
+*.log
+
+# Pesos pesados de modelos (opcional si son muy grandes)
+*.h5
+*.keras
