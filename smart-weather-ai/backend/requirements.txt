@@ -8,6 +8,8 @@ google-generativeai==0.8.4
 pillow==11.1.0
 numpy==2.2.1
 requests==2.32.3
+SQLAlchemy==2.0.36
+tzdata==2025.2
 
 # Opcional: instalar solo si vas a conectar la CNN real (.pt)
 # torch==2.5.1

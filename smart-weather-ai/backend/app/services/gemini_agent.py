@@ -6,8 +6,9 @@ resuelve automáticamente el Flash vigente disponible para la clave.
 
 - Inyecta el contexto completo: ciudad, métricas actuales, clasificación de la
   CNN del cielo y pronóstico de lluvia de la LSTM.
-- Detecta destinos en la pregunta, los geocodifica, consulta su clima y compara
-  el destino contra la ubicación actual.
+- Detecta destinos y normaliza jerga/abreviaciones a topónimos formales con
+  Gemini; después geocodifica con sesgo de proximidad y consulta su clima para
+  compararlo contra la ubicación actual.
 - Usa temperature alta (0.8) y un System Prompt que exige variar el vocabulario
   para evitar respuestas repetitivas.
 - Devuelve JSON estricto para alimentar las tarjetas visuales del frontend.
@@ -21,6 +22,7 @@ import json
 import logging
 import random
 import re
+import unicodedata
 
 from app.config import settings
 from app.schemas import Recommendations
@@ -56,15 +58,24 @@ Reglas:
 """.strip()
 
 DESTINATION_PROMPT = """
-Detecta si la pregunta del usuario menciona un destino geográfico (ciudad, colonia,
-municipio, estado o país) cuyo clima quiere consultar o comparar.
+Detecta si la pregunta del usuario menciona un destino geográfico (ciudad,
+colonia, municipio, estado o lugar) cuyo clima quiere consultar o comparar, y
+normaliza jerga, abreviaciones o errores de escritura a un topónimo formal de
+México.
 
 Reglas:
-1. Devuelve solo el nombre del lugar, sin frases como "el clima de" ni fechas.
-2. Si hay varios lugares, devuelve únicamente el destino principal.
-3. Si no hay un destino explícito, devuelve null.
-4. Responde EXCLUSIVAMENTE con JSON válido, sin markdown:
-{"destination": "nombre del lugar" | null}
+1. Detecta la intención de viaje o consulta: "voy a...", "iré a...", "me voy
+   para...", "qué tal el clima en...", "va a llover en...".
+2. Normaliza la jerga a un nombre geográfico formal mexicano. Ejemplos:
+   - "huixqui" -> "Huixquilucan, Estado de México"
+   - "el tec" -> "Tecnológico de Monterrey Campus Santa Fe"
+   - "santa fe" -> "Santa Fe, Ciudad de México"
+   - "la condesa" -> "La Condesa, Ciudad de México"
+3. Devuelve solo el topónimo normalizado, sin frases como "el clima de".
+4. Si hay varios lugares, devuelve únicamente el destino principal.
+5. Si no hay un destino explícito, devuelve null.
+6. Responde EXCLUSIVAMENTE con JSON válido, sin markdown:
+{"destination": "topónimo formal" | null, "is_travel": true|false}
 """.strip()
 
 DESTINATION_CONFIG = {
@@ -264,11 +275,6 @@ _TIME_SUFFIX = re.compile(
     re.IGNORECASE,
 )
 
-_TRAVEL_CUES = re.compile(
-    r"\b(?:viaj\w*|voy|vamos|ir[ée]?|irme|destino|llegar\w*|hacia|visitar|conocer)\b",
-    re.IGNORECASE,
-)
-
 
 def _clean_destination(candidate: str | None) -> str | None:
     text = (candidate or "").strip(" \t\n\r,.;:!?¡¿\"'")
@@ -320,14 +326,6 @@ def _destination_from_text(user_prompt: str) -> str | None:
     return None
 
 
-def _might_contain_destination(user_prompt: str) -> bool:
-    if _TRAVEL_CUES.search(user_prompt):
-        return True
-
-    tokens = re.findall(r"[A-Za-zÁÉÍÓÚÑáéíóúñü]+", user_prompt)
-    return any(token[0].isupper() for token in tokens[1:])
-
-
 def _extract_destination_with_gemini(user_prompt: str) -> str | None:
     if _get_model() is None:
         return None
@@ -347,19 +345,71 @@ def _extract_destination_with_gemini(user_prompt: str) -> str | None:
         parsed = _extract_json(response.text)
         destination = parsed.get("destination")
         if isinstance(destination, str):
-            return _clean_destination(destination)
+            normalized = _clean_destination(destination)
+            if normalized:
+                logger.info(
+                    "Gemini normalizó el destino a '%s' (viaje=%s)",
+                    normalized,
+                    bool(parsed.get("is_travel")),
+                )
+            return normalized
     except Exception:
         logger.exception("No se pudo extraer el destino con Gemini")
     return None
 
 
+_DESTINATION_STOPWORDS = {
+    "de",
+    "del",
+    "la",
+    "las",
+    "el",
+    "los",
+    "y",
+    "en",
+    "con",
+    "por",
+    "para",
+    "que",
+}
+
+
+def _tokenize(text: str) -> list[str]:
+    normalized = unicodedata.normalize("NFKD", (text or "").lower())
+    plain = "".join(char for char in normalized if not unicodedata.combining(char))
+    return [token for token in re.split(r"[^a-z0-9]+", plain) if token]
+
+
+def _destination_matches_prompt(destination: str, user_prompt: str) -> bool:
+    """Evita que Gemini invente destinos que el usuario no mencionó."""
+    prompt_tokens = _tokenize(user_prompt)
+    if not prompt_tokens:
+        return False
+
+    for token in _tokenize(destination):
+        if len(token) < 3 or token in _DESTINATION_STOPWORDS:
+            continue
+        for prompt_token in prompt_tokens:
+            if len(prompt_token) < 3:
+                continue
+            if token.startswith(prompt_token) or prompt_token.startswith(token):
+                return True
+    return False
+
+
 def _extract_destination(user_prompt: str) -> str | None:
-    destination = _destination_from_text(user_prompt)
-    if destination:
-        return destination
-    if not _might_contain_destination(user_prompt):
-        return None
-    return _extract_destination_with_gemini(user_prompt)
+    # Gemini entiende jerga, abreviaciones e intención de viaje; el regex queda
+    # solo como respaldo cuando no hay clave/modelo disponible.
+    normalized = _extract_destination_with_gemini(user_prompt)
+    if normalized:
+        if _destination_matches_prompt(normalized, user_prompt):
+            return normalized
+        logger.info(
+            "Destino '%s' descartado: no aparece en la pregunta '%s'",
+            normalized,
+            user_prompt,
+        )
+    return _destination_from_text(user_prompt)
 
 
 def _optional_float(value) -> float | None:
@@ -374,8 +424,12 @@ def _resolve_destination(user_prompt: str, context_data: dict) -> dict | None:
     if not place:
         return None
 
+    current = context_data.get("current") or {}
+    user_lat = _optional_float(current.get("latitude"))
+    user_lon = _optional_float(current.get("longitude"))
+
     logger.info("Destino detectado en la pregunta: '%s'", place)
-    location = location_service.geocode_destination(place)
+    location = location_service.geocode_destination(place, user_lat, user_lon)
 
     if (
         not location
@@ -783,6 +837,7 @@ def generate_weather_response(user_prompt: str, context_data: dict) -> dict:
                     "answer": answer,
                     "recommendations": recommendations,
                     "source": "gemini",
+                    "destination": destination,
                 }
             except Exception:
                 # Traceback completo visible en consola para depurar cuota, red o JSON.
@@ -801,4 +856,5 @@ def generate_weather_response(user_prompt: str, context_data: dict) -> dict:
             summary=fallback["summary"],
         ),
         "source": "fallback",
+        "destination": destination,
     }

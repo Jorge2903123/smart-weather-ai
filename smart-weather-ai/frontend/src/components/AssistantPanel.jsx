@@ -23,6 +23,7 @@ export default function AssistantPanel({ answer, source, loading, onAsk }) {
     stop,
     speak,
     cancelSpeech,
+    unlockAudio,
   } = useSpeech({
     onResult: (transcript) => {
       setText(transcript);
@@ -39,8 +40,18 @@ export default function AssistantPanel({ answer, source, loading, onAsk }) {
 
   function handleSubmit(event) {
     event.preventDefault();
+    unlockAudio();
     submitPrompt(text);
     setText("");
+  }
+
+  function handleMicClick() {
+    unlockAudio();
+    if (listening) {
+      stop();
+    } else {
+      start();
+    }
   }
 
   return (
@@ -68,7 +79,7 @@ export default function AssistantPanel({ answer, source, loading, onAsk }) {
 
         <button
           type="button"
-          onClick={listening ? stop : start}
+          onClick={handleMicClick}
           disabled={!supported || loading}
           className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full border transition-colors ${
             listening

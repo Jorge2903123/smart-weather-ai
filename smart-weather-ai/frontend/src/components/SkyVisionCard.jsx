@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { analyzeSky } from "../services/api";
 
-export default function SkyVisionCard({ analysis, onAnalyzed }) {
+export default function SkyVisionCard({ analysis, onAnalyzed, location = "" }) {
   const inputRef = useRef(null);
   const [preview, setPreview] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -22,7 +22,7 @@ export default function SkyVisionCard({ analysis, onAnalyzed }) {
     setLoading(true);
 
     try {
-      const result = await analyzeSky(file);
+      const result = await analyzeSky(file, location);
       onAnalyzed?.(result);
     } catch (err) {
       setError(err.message);
@@ -50,7 +50,6 @@ export default function SkyVisionCard({ analysis, onAnalyzed }) {
         ref={inputRef}
         type="file"
         accept="image/*"
-        capture="environment"
         className="hidden"
         onChange={handleFile}
       />
@@ -61,7 +60,7 @@ export default function SkyVisionCard({ analysis, onAnalyzed }) {
         onClick={() => inputRef.current?.click()}
         disabled={loading}
       >
-        {loading ? "Analizando imagen..." : "Tomar o subir foto del cielo"}
+        {loading ? "Analizando imagen..." : "Tomar foto o elegir de la galería"}
       </button>
 
       {error && <p className="mt-3 text-xs text-rose-600">{error}</p>}
@@ -87,18 +86,38 @@ export default function SkyVisionCard({ analysis, onAnalyzed }) {
                   <p className="truncate text-sm font-semibold text-slate-800">
                     {analysis.label}
                   </p>
-                  <p className="text-xs text-slate-500">{analysis.state}</p>
-                  <div className="mt-2 flex items-center gap-2">
-                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-200">
-                      <div
-                        className="h-full rounded-full bg-slate-700"
-                        style={{ width: `${Math.round(analysis.confidence * 100)}%` }}
-                      />
+                  <p className="text-xs text-slate-500">
+                    {analysis.status === "invalid_image"
+                      ? analysis.description
+                      : analysis.state}
+                  </p>
+
+                  {analysis.status === "invalid_image" ? (
+                    <p className="mt-2 text-[11px] font-medium text-amber-600">
+                      Sin datos de lluvia: intenta con otra foto.
+                    </p>
+                  ) : (
+                    <div className="mt-2 flex items-center gap-2">
+                      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-200">
+                        <div
+                          className="h-full rounded-full bg-slate-700"
+                          style={{
+                            width: `${Math.round(analysis.confidence * 100)}%`,
+                          }}
+                        />
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-500">
+                        {Math.round(analysis.confidence * 100)}%
+                      </span>
                     </div>
-                    <span className="text-[11px] font-medium text-slate-500">
-                      {Math.round(analysis.confidence * 100)}%
-                    </span>
-                  </div>
+                  )}
+
+                  {analysis.status !== "invalid_image" && (
+                    <p className="mt-1.5 text-[11px] text-slate-400">
+                      Probabilidad de lluvia estimada:{" "}
+                      {Math.round(analysis.rain_probability ?? 0)}%
+                    </p>
+                  )}
                 </>
               )
             )}

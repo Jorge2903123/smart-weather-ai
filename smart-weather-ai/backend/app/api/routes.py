@@ -8,9 +8,18 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
+from fastapi import (
+    APIRouter,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 
 from app.config import settings
+from app.db import log_weather
 from app.schemas import (
     AssistantAskRequest,
     AssistantResponse,
@@ -74,6 +83,7 @@ def weather_current(
     lon: float | None = Query(default=None, ge=-180, le=180),
 ) -> CurrentWeather:
     location = _resolve_request_location(lat, lon)
+    # Las consultas pasivas (al montar la app) no se persisten en el historial.
     return CurrentWeather(**_weather_for_location(location))
 
 
@@ -95,6 +105,10 @@ def weather_forecast(
 @router.post("/vision/analyze", response_model=SkyAnalysis)
 async def analyze_sky(
     image: UploadFile = File(..., description="Foto del cielo (JPEG/PNG/WebP)"),
+    location: str | None = Form(
+        default=None,
+        description="Ubicación desde la que se tomó la foto (opcional).",
+    ),
 ) -> SkyAnalysis:
     if not image.content_type or not image.content_type.startswith("image/"):
         raise HTTPException(
@@ -116,6 +130,17 @@ async def analyze_sky(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
 
+    # Solo se persisten análisis válidos; las imágenes descartadas no ensucian
+    # el historial ni las métricas.
+    if result.get("status") != "invalid_image":
+        log_weather(
+            location=location,
+            temperature=None,
+            rain_probability=result.get("rain_probability"),
+            sky_condition=result.get("label"),
+            query_type="vision",
+        )
+
     return SkyAnalysis(**result)
 
 
@@ -136,4 +161,29 @@ def assistant_ask(payload: AssistantAskRequest) -> AssistantResponse:
         }
 
     result = gemini_agent.generate_weather_response(payload.prompt, context)
-    return AssistantResponse(**result)
+    destination = result.pop("destination", None)
+
+    # Solo se persisten interacciones deliberadas del usuario.
+    log_target = (
+        (destination.get("current") or {})
+        if destination and destination.get("resolved")
+        else (context.get("current") or {})
+    )
+    log_forecast = (
+        destination.get("forecast")
+        if destination and destination.get("resolved")
+        else context.get("forecast")
+    )
+    points = (log_forecast or {}).get("points") or []
+    rain_values = [float(point.get("rain_probability") or 0.0) for point in points]
+    rain_values.append(float(log_target.get("rain_probability") or 0.0))
+
+    log_weather(
+        location=log_target.get("location"),
+        temperature=log_target.get("temperature"),
+        rain_probability=max(rain_values, default=0.0),
+        sky_condition=log_target.get("condition"),
+        query_type="assistant_query",
+    )
+
+    return AssistantResponse(**result, destination=destination)

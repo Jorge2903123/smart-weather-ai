@@ -1,23 +1,55 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Header from "./components/Header";
-import CurrentWeather from "./components/CurrentWeather";
-import ForecastSection from "./components/ForecastSection";
-import SkyVisionCard from "./components/SkyVisionCard";
-import AssistantPanel from "./components/AssistantPanel";
-import RecommendationBadge from "./components/RecommendationBadge";
+import AdminModal from "./components/AdminModal";
+import MainWeatherView from "./components/MainWeatherView";
 import { useGeolocation } from "./hooks/useGeolocation";
-import { askAssistant, getCurrentWeather, getForecast } from "./services/api";
+import {
+  analyzeSky,
+  askAssistant,
+  getCurrentWeather,
+  getForecast,
+} from "./services/api";
+
+function conditionKey(weather) {
+  const text = `${weather?.condition ?? ""} ${weather?.sky_state ?? ""}`.toLowerCase();
+  if (text.includes("tormenta") || text.includes("trueno")) return "storm";
+  if (
+    text.includes("lluvia") ||
+    text.includes("llovizna") ||
+    text.includes("chubasco")
+  ) {
+    return "rain";
+  }
+  if (text.includes("parcial") || text.includes("mayormente despejado")) {
+    return "partly_cloudy";
+  }
+  if (
+    text.includes("nublado") ||
+    text.includes("niebla") ||
+    text.includes("variable") ||
+    text.includes("nieve")
+  ) {
+    return "cloudy";
+  }
+  if (text.includes("despejado") || text.includes("soleado")) return "clear_day";
+  return "partly_cloudy";
+}
+
+function forecastIcon(rainProbability, currentCondition) {
+  if (currentCondition === "storm") return "cloud-lightning";
+  if (currentCondition === "rain" || rainProbability >= 50) return "cloud-rain";
+  if (currentCondition === "clear_day") return "sun";
+  if (currentCondition === "cloudy") return "cloud";
+  return "cloud-sun";
+}
 
 export default function App() {
   const [weather, setWeather] = useState(null);
   const [forecast, setForecast] = useState(null);
   const [analysis, setAnalysis] = useState(null);
   const [assistant, setAssistant] = useState(null);
-
-  const [loadingWeather, setLoadingWeather] = useState(true);
+  const [adminOpen, setAdminOpen] = useState(false);
   const [loadingAssistant, setLoadingAssistant] = useState(false);
   const [error, setError] = useState("");
-  const [online, setOnline] = useState(true);
 
   const {
     status: locationStatus,
@@ -26,7 +58,6 @@ export default function App() {
   } = useGeolocation();
 
   const loadWeather = useCallback(async (position = null) => {
-    setLoadingWeather(true);
     setError("");
 
     try {
@@ -41,12 +72,8 @@ export default function App() {
       ]);
       setWeather(current);
       setForecast(projection);
-      setOnline(true);
     } catch (err) {
       setError(err.message);
-      setOnline(false);
-    } finally {
-      setLoadingWeather(false);
     }
   }, []);
 
@@ -80,15 +107,27 @@ export default function App() {
           forecast,
         });
         setAssistant(response);
-        setOnline(true);
       } catch (err) {
         setError(err.message);
-        setOnline(false);
       } finally {
         setLoadingAssistant(false);
       }
     },
     [weather, analysis, forecast]
+  );
+
+  const handlePhoto = useCallback(
+    async (file) => {
+      setError("");
+
+      try {
+        const result = await analyzeSky(file, weather?.location ?? "");
+        setAnalysis(result);
+      } catch (err) {
+        setError(err.message);
+      }
+    },
+    [weather?.location]
   );
 
   // Recomendación inmediata (sin esperar al asistente) derivada del pronóstico.
@@ -121,96 +160,102 @@ export default function App() {
     };
   }, [assistant, weather, forecast, analysis]);
 
-  const usingApproximateLocation =
-    weather?.location_source === "ip" ||
-    weather?.location_source === "default" ||
-    locationStatus === "denied" ||
-    locationStatus === "unavailable";
+  const viewData = useMemo(() => {
+    const condition = conditionKey(weather);
+    const points = forecast?.points ?? [];
+    const advice = loadingAssistant
+      ? "Consultando el clima para tu pregunta…"
+      : assistant?.answer ||
+        recommendations?.summary ||
+        "Revisa el pronóstico antes de salir.";
 
-  const locationHint = usingApproximateLocation
-    ? "Usando ubicación aproximada por IP"
-    : "";
+    return {
+      current_weather: {
+        temperature: weather?.temperature ?? 20,
+        condition,
+        humidity: weather?.humidity ?? 50,
+        wind_speed_kmh: Math.round(weather?.wind_kph ?? 10),
+        uv_index: Math.round(weather?.uv_index ?? 0),
+      },
+      hourly_forecast: points.map((point) => {
+        const rainProbability = point.rain_probability ?? 0;
+        return {
+          time: point.time,
+          temp: Math.round(point.temperature),
+          rain_prob: rainProbability,
+          icon: forecastIcon(rainProbability, condition),
+        };
+      }),
+      vision_diagnosis: {
+        has_image: analysis?.has_image ?? Boolean(analysis),
+        is_valid: analysis?.is_valid ?? analysis?.status === "ok",
+        sky_label: analysis?.sky_label ?? analysis?.label ?? null,
+        message: analysis?.message ?? analysis?.description ?? null,
+      },
+      ai_recommendation: {
+        actionable_advice: advice,
+        summary: assistant ? assistant?.recommendations?.summary ?? null : null,
+        speech_text: advice,
+      },
+      location: {
+        current:
+          weather?.location ||
+          (locationStatus === "requesting"
+            ? "Detectando ubicación…"
+            : "Mi ubicación"),
+        destination:
+          assistant?.destination?.location?.display_name ||
+          assistant?.destination?.query ||
+          null,
+      },
+    };
+  }, [
+    weather,
+    forecast,
+    analysis,
+    assistant,
+    recommendations,
+    loadingAssistant,
+    locationStatus,
+  ]);
 
   const locationNotice =
     locationStatus === "denied"
-      ? `${locationError || "Permiso de ubicación denegado."} Activa la ubicación para Safari en Ajustes y toca GPS para reintentar.`
+      ? `${locationError || "Permiso de ubicación denegado."} Activa la ubicación para Safari en Ajustes y toca Reintentar.`
       : "";
 
   return (
-    <div className="min-h-dvh px-4 pt-[max(1rem,env(safe-area-inset-top))]">
-      <div className="safe-bottom mx-auto w-full max-w-md lg:max-w-5xl">
-        <Header
-          location={
-            weather?.location ||
-            (locationStatus === "requesting"
-              ? "Detectando ubicación…"
-              : "Mi ubicación")
-          }
-          hint={locationHint}
-          updatedAt={weather?.updated_at}
-          online={online}
-          showGpsButton={usingApproximateLocation}
-          gpsLoading={locationStatus === "requesting"}
-          onRequestGps={refreshLocation}
-        />
+    <div className="relative">
+      <MainWeatherView
+        data={viewData}
+        onPhoto={handlePhoto}
+        onAsk={handleAsk}
+        onOpenAdmin={() => setAdminOpen(true)}
+      />
 
-        {locationNotice && (
-          <div
-            role="alert"
-            className="mt-2 flex items-start justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800"
-          >
-            <p className="leading-relaxed">{locationNotice}</p>
+      {(error || locationNotice) && (
+        <div
+          role="alert"
+          className={`fixed inset-x-3 top-[max(0.75rem,env(safe-area-inset-top))] z-40 mx-auto max-w-md rounded-2xl p-3 text-xs shadow-lg backdrop-blur ${
+            error
+              ? "bg-rose-600/95 text-white"
+              : "bg-amber-100/95 text-amber-900"
+          }`}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <p className="leading-relaxed">{error || locationNotice}</p>
             <button
               type="button"
               onClick={refreshLocation}
               className="shrink-0 font-semibold underline"
             >
-              Reintentar GPS
+              Reintentar
             </button>
           </div>
-        )}
+        </div>
+      )}
 
-        {error && (
-          <div className="mt-2 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
-            <div className="flex items-start justify-between gap-3">
-              <p className="leading-relaxed">{error}</p>
-              <button
-                type="button"
-                onClick={refreshLocation}
-                className="shrink-0 font-semibold underline"
-              >
-                Reintentar
-              </button>
-            </div>
-          </div>
-        )}
-
-        <main className="mt-3 grid gap-3 lg:grid-cols-2 lg:items-start">
-          <div className="space-y-3">
-            <CurrentWeather weather={weather} loading={loadingWeather} />
-            <RecommendationBadge recommendations={recommendations} />
-            <ForecastSection
-              forecast={forecast}
-              weather={weather}
-              loading={loadingWeather}
-            />
-          </div>
-
-          <div className="space-y-3">
-            <AssistantPanel
-              answer={assistant?.answer}
-              source={assistant?.source}
-              loading={loadingAssistant}
-              onAsk={handleAsk}
-            />
-            <SkyVisionCard analysis={analysis} onAnalyzed={setAnalysis} />
-          </div>
-        </main>
-
-        <footer className="mt-4 pb-2 text-center text-[11px] text-slate-400">
-          Smart Weather AI · MVP académico · Visión, pronóstico y voz
-        </footer>
-      </div>
+      <AdminModal open={adminOpen} onClose={() => setAdminOpen(false)} />
     </div>
   );
 }

@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     # Si no existe, vision_model.py usa el clasificador heurístico de respaldo.
     vision_model_path: str | None = None
 
+    # --- Base de datos ------------------------------------------------------
+    # Por defecto SQLite en backend/smart_weather.db. Se puede sobrescribir.
+    database_url: str | None = None
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

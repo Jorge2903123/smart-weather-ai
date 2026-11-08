@@ -8,17 +8,27 @@ Ejecutar en desarrollo:
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
 from app.config import settings
+from app.db import init_db
+from app.routers import admin_router
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    init_db()
+    yield
+
 
 app = FastAPI(
     title=settings.app_name,
@@ -27,6 +37,7 @@ app = FastAPI(
         "MVP de Smart Weather AI: clima actual, visión del cielo, pronóstico "
         "a corto plazo y asistente con Gemini."
     ),
+    lifespan=lifespan,
 )
 
 # CORS abierto para pruebas locales desde Vite, Safari iOS y túneles HTTPS.
@@ -39,6 +50,7 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(admin_router)
 
 
 @app.get("/", tags=["Root"])

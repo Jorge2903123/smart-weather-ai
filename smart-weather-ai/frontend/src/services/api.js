@@ -61,9 +61,10 @@ export async function getForecast({ lat, lon, hours = 6 } = {}) {
   }
 }
 
-export async function analyzeSky(file) {
+export async function analyzeSky(file, location = "") {
   const formData = new FormData();
   formData.append("image", file);
+  if (location) formData.append("location", location);
 
   try {
     const { data } = await client.post("/vision/analyze", formData, {
@@ -81,6 +82,33 @@ export async function askAssistant(prompt, currentContext = {}) {
       prompt,
       current_context: currentContext,
     });
+    return data;
+  } catch (error) {
+    throw toFriendlyError(error);
+  }
+}
+
+export async function getAdminSummary() {
+  try {
+    const { data } = await client.get("/admin/summary");
+    return data;
+  } catch (error) {
+    throw toFriendlyError(error);
+  }
+}
+
+export async function getAdminHistory(limit = 50) {
+  try {
+    const { data } = await client.get("/admin/history", { params: { limit } });
+    return data;
+  } catch (error) {
+    throw toFriendlyError(error);
+  }
+}
+
+export async function cleanupLogs() {
+  try {
+    const { data } = await client.post("/admin/cleanup");
     return data;
   } catch (error) {
     throw toFriendlyError(error);

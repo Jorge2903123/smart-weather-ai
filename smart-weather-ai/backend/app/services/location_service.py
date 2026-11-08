@@ -6,10 +6,11 @@ Prioridad:
 2. Sin coordenadas -> ubicación aproximada por IP pública (ipapi.co).
 3. Si ambos fallan -> etiqueta neutra para no romper la app.
 
-Geocodificación de destinos:
-1. Hotspots locales (coordenadas fijas para colonias/zona conurbadas).
-2. Nominatim restringido a México.
-3. Open-Meteo Geocoding como respaldo.
+Geocodificación de destinos (100% dinámica, sin listas fijas):
+1. Nominatim con sesgo espacial alrededor de la ubicación del usuario.
+2. Photon con el mismo sesgo (segundo proveedor).
+3. Fallback sin sesgo restringido a México.
+4. Open-Meteo Geocoding como último recurso.
 
 Los resultados se cachean para respetar las políticas de uso de los servicios
 gratuitos y para que las llamadas simultáneas de clima + pronóstico no dupliquen
@@ -19,7 +20,6 @@ peticiones externas.
 from __future__ import annotations
 
 import logging
-import re
 import threading
 import time
 import unicodedata
@@ -32,80 +32,14 @@ logger = logging.getLogger(__name__)
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
 NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
+PHOTON_URL = "https://photon.komoot.io/api"
 OPEN_METEO_GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 IPAPI_URL = "https://ipapi.co/json/"
 USER_AGENT = "SmartWeatherAI-App/1.0"
 REQUEST_TIMEOUT = 4
 IP_CACHE_TTL = 600  # 10 minutos
-SEARCH_VIEWBOX_SPAN = 1.25
-MEXICO_BBOX = (-118.5, 14.5, -86.5, 32.8)
+SEARCH_VIEWBOX_SPAN = 1.2  # ~120 km de radio para el sesgo de proximidad
 
-# Nivel 1: coordenadas fijas para zonas que los geocodificadores globales
-# suelen confundir con municipios homónimos de otros estados/países.
-KNOWN_HOTSPOTS: dict[str, dict[str, Any]] = {
-    "interlomas": {
-        "name": "Interlomas (Huixquilucan)",
-        "lat": 19.3986,
-        "lon": -99.2831,
-        "state": "Estado de México",
-    },
-    "santa fe": {
-        "name": "Santa Fe (CDMX)",
-        "lat": 19.3598,
-        "lon": -99.2589,
-        "state": "Ciudad de México",
-    },
-    "polanco": {
-        "name": "Polanco (CDMX)",
-        "lat": 19.4337,
-        "lon": -99.1917,
-        "state": "Ciudad de México",
-    },
-    "bosques de las lomas": {
-        "name": "Bosques de las Lomas",
-        "lat": 19.3942,
-        "lon": -99.2458,
-        "state": "Ciudad de México",
-    },
-    "condesa": {
-        "name": "La Condesa (CDMX)",
-        "lat": 19.4115,
-        "lon": -99.1717,
-        "state": "Ciudad de México",
-    },
-    "roma": {
-        "name": "Colonia Roma (CDMX)",
-        "lat": 19.4184,
-        "lon": -99.1622,
-        "state": "Ciudad de México",
-    },
-    "coyoacan": {
-        "name": "Coyoacán",
-        "lat": 19.3499,
-        "lon": -99.1623,
-        "state": "Ciudad de México",
-    },
-    "satelite": {
-        "name": "Ciudad Satélite (Naucalpan)",
-        "lat": 19.5100,
-        "lon": -99.2344,
-        "state": "Estado de México",
-    },
-    "naucalpan": {
-        "name": "Naucalpan de Juárez",
-        "lat": 19.4785,
-        "lon": -99.2396,
-        "state": "Estado de México",
-    },
-    "cuernavaca": {
-        "name": "Cuernavaca",
-        "lat": 18.9242,
-        "lon": -99.2216,
-        "state": "Morelos",
-    },
-}
-
-# Abreviaturas de estados de México para un Header más compacto.
 _STATE_ABBREVIATIONS = {
     "aguascalientes": "Ags.",
     "baja california": "B.C.",
@@ -160,36 +94,6 @@ def _short_state(state: str | None) -> str | None:
 def _normalize_text(value: str) -> str:
     decomposed = unicodedata.normalize("NFKD", value.strip().lower())
     return "".join(char for char in decomposed if not unicodedata.combining(char))
-
-
-def _hotspot_key(value: str) -> str:
-    normalized = _normalize_text(value)
-    normalized = re.sub(r"\b(?:colonia|col|la|el)\b", " ", normalized)
-    normalized = normalized.replace("ciudad de mexico", " ").replace("cdmx", " ")
-    return " ".join(normalized.replace(",", " ").split())
-
-
-def _find_hotspot(query: str) -> dict[str, Any] | None:
-    key = _hotspot_key(query)
-    if key in KNOWN_HOTSPOTS:
-        return KNOWN_HOTSPOTS[key]
-    for hotspot_key, hotspot in KNOWN_HOTSPOTS.items():
-        if key.startswith(f"{hotspot_key} "):
-            return hotspot
-    return None
-
-
-def _hotspot_location(hotspot: dict[str, Any]) -> dict:
-    return {
-        "display_name": hotspot["name"],
-        "city": hotspot["name"],
-        "state": hotspot["state"],
-        "country": "México",
-        "country_code": "mx",
-        "latitude": hotspot["lat"],
-        "longitude": hotspot["lon"],
-        "source": "hotspot",
-    }
 
 
 def _nominatim_destination_queries(query: str) -> list[str]:
@@ -360,6 +264,74 @@ def _geocode_place_cached(
 
 
 @lru_cache(maxsize=256)
+def _photon_geocode_cached(
+    query: str,
+    near_latitude: float | None,
+    near_longitude: float | None,
+) -> dict | None:
+    """Búsqueda en Photon (Komoot) con sesgo opcional por proximidad."""
+    params: dict[str, Any] = {
+        "q": query,
+        "limit": 5,
+        "lang": "es",
+    }
+    if near_latitude is not None and near_longitude is not None:
+        params["lat"] = near_latitude
+        params["lon"] = near_longitude
+
+    response = requests.get(
+        PHOTON_URL,
+        params=params,
+        headers={"User-Agent": USER_AGENT},
+        timeout=REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
+    logger.info("Photon URL consultada: %s", response.url)
+
+    features = (response.json() or {}).get("features") or []
+    if not features:
+        logger.info("Photon sin resultados para '%s'", query)
+        return None
+
+    # Prioriza resultados mexicanos cuando el proveedor devuelve varios países.
+    feature = next(
+        (
+            item
+            for item in features
+            if str((item.get("properties") or {}).get("countrycode", "")).lower()
+            == "mx"
+        ),
+        features[0],
+    )
+    properties = feature.get("properties") or {}
+    coordinates = (feature.get("geometry") or {}).get("coordinates") or []
+    if len(coordinates) < 2:
+        return None
+
+    city = (
+        properties.get("city")
+        or properties.get("district")
+        or properties.get("locality")
+        or properties.get("name")
+        or query
+    )
+    logger.info(
+        "Photon resultado para '%s': %s",
+        query,
+        properties.get("name") or city,
+    )
+    return _build_location(
+        city=city,
+        state=properties.get("state"),
+        country=properties.get("country"),
+        country_code=properties.get("countrycode"),
+        latitude=coordinates[1],
+        longitude=coordinates[0],
+        source="geocoded",
+    )
+
+
+@lru_cache(maxsize=256)
 def _open_meteo_geocode_cached(query: str) -> dict | None:
     response = requests.get(
         OPEN_METEO_GEOCODE_URL,
@@ -393,77 +365,142 @@ def _open_meteo_geocode_cached(query: str) -> dict | None:
     return location
 
 
-def geocode_destination(destination_name: str) -> dict | None:
+def _has_coordinates(location: dict | None) -> bool:
+    return bool(
+        location
+        and location.get("latitude") is not None
+        and location.get("longitude") is not None
+    )
+
+
+def dynamic_geocode(
+    normalized_name: str,
+    user_lat: float | None = None,
+    user_lon: float | None = None,
+) -> dict | None:
     """
-    Geocodifica un destino en tres niveles:
-    1. Hotspot local (sin latencia ni APIs).
-    2. Nominatim restringido a México.
-    3. Open-Meteo Geocoding como respaldo.
+    Geocodifica un topónimo con sesgo espacial hacia la ubicación del usuario.
+
+    Fases:
+    1. Nominatim con `viewbox` de ±1.2° (~120 km) alrededor del usuario.
+    2. Photon con el mismo sesgo (proveedor alterno).
+    3. Fallback sin sesgo restringido a México.
+    4. Open-Meteo Geocoding como último recurso.
     """
-    query = (destination_name or "").strip()
+    query = (normalized_name or "").strip()
     if not query:
         return None
 
-    logger.info("Resolviendo destino '%s'", query)
+    has_bias = user_lat is not None and user_lon is not None
+    logger.info(
+        "Resolviendo destino '%s' (sesgo=%s)",
+        query,
+        f"{user_lat:.4f},{user_lon:.4f}" if has_bias else "sin GPS",
+    )
 
-    hotspot = _find_hotspot(query)
-    if hotspot:
-        location = _hotspot_location(hotspot)
-        logger.info(
-            "Nivel 1 hotspot local: '%s' -> %s (%.5f, %.5f)",
-            query,
-            location["display_name"],
-            location["latitude"],
-            location["longitude"],
-        )
-        return location
+    nominatim_queries = _nominatim_destination_queries(query)
+    open_meteo_queries = _open_meteo_destination_queries(query)
 
-    for candidate in _nominatim_destination_queries(query):
+    if has_bias:
+        for candidate in nominatim_queries:
+            try:
+                with _search_lock:
+                    location = _geocode_place_cached(
+                        candidate, user_lat, user_lon, "mx"
+                    )
+            except requests.Timeout as exc:
+                logger.warning("Nominatim timeout para '%s': %s", candidate, exc)
+                location = None
+            except Exception as exc:  # pragma: no cover - depende de la red externa
+                logger.warning("Nominatim falló para '%s': %s", candidate, exc)
+                location = None
+            if _has_coordinates(location):
+                logger.info(
+                    "Nominatim con sesgo: '%s' -> %s",
+                    query,
+                    location.get("display_name"),
+                )
+                return location
+
+        for candidate in nominatim_queries:
+            try:
+                with _search_lock:
+                    location = _photon_geocode_cached(candidate, user_lat, user_lon)
+            except requests.Timeout as exc:
+                logger.warning("Photon timeout para '%s': %s", candidate, exc)
+                location = None
+            except Exception as exc:  # pragma: no cover - depende de la red externa
+                logger.warning("Photon falló para '%s': %s", candidate, exc)
+                location = None
+            if _has_coordinates(location):
+                logger.info(
+                    "Photon con sesgo: '%s' -> %s",
+                    query,
+                    location.get("display_name"),
+                )
+                return location
+
+    for candidate in nominatim_queries:
         try:
             with _search_lock:
                 location = _geocode_place_cached(candidate, None, None, "mx")
-            if location:
-                logger.info(
-                    "Nivel 2 Nominatim: '%s' -> %s",
-                    query,
-                    location.get("display_name"),
-                )
-                return location
         except requests.Timeout as exc:
             logger.warning("Nominatim timeout para '%s': %s", candidate, exc)
-            break
+            location = None
         except Exception as exc:  # pragma: no cover - depende de la red externa
             logger.warning("Nominatim falló para '%s': %s", candidate, exc)
+            location = None
+        if _has_coordinates(location):
+            logger.info(
+                "Nominatim sin sesgo: '%s' -> %s",
+                query,
+                location.get("display_name"),
+            )
+            return location
 
-    for candidate in _open_meteo_destination_queries(query):
+    for candidate in nominatim_queries:
+        try:
+            with _search_lock:
+                location = _photon_geocode_cached(candidate, None, None)
+        except Exception as exc:  # pragma: no cover - depende de la red externa
+            logger.warning("Photon falló para '%s': %s", candidate, exc)
+            location = None
+        if _has_coordinates(location):
+            logger.info(
+                "Photon sin sesgo: '%s' -> %s",
+                query,
+                location.get("display_name"),
+            )
+            return location
+
+    for candidate in open_meteo_queries:
         try:
             location = _open_meteo_geocode_cached(candidate)
-            if location:
-                logger.info(
-                    "Nivel 3 Open-Meteo: '%s' -> %s",
-                    query,
-                    location.get("display_name"),
-                )
-                return location
         except requests.Timeout as exc:
             logger.warning("Open-Meteo timeout para '%s': %s", candidate, exc)
             break
         except Exception as exc:  # pragma: no cover - depende de la red externa
             logger.warning("Open-Meteo Geocoding falló para '%s': %s", candidate, exc)
+            continue
+        if _has_coordinates(location):
+            logger.info(
+                "Open-Meteo Geocoding: '%s' -> %s",
+                query,
+                location.get("display_name"),
+            )
+            return location
 
     logger.info("No se pudo geocodificar el destino '%s'", query)
     return None
 
 
-def geocode_place(
-    place_name: str,
-    *,
-    near_latitude: float | None = None,
-    near_longitude: float | None = None,
-    country_code: str | None = None,
+def geocode_destination(
+    destination_name: str,
+    user_lat: float | None = None,
+    user_lon: float | None = None,
 ) -> dict | None:
-    """Compatibilidad con llamadas previas; delega en geocode_destination."""
-    return geocode_destination(place_name)
+    """Compatibilidad: geocodificación dinámica con sesgo por proximidad."""
+    return dynamic_geocode(destination_name, user_lat, user_lon)
 
 
 def resolve_coordinates(latitude: float, longitude: float) -> dict:

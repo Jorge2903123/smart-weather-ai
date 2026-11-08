@@ -15,6 +15,12 @@ dist/
 *.h5
 *.pth
 
+# Base de datos local
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
 # Sistema
 .DS_Store
 Thumbs.db

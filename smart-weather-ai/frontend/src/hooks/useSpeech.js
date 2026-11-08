@@ -99,6 +99,8 @@ export function useSpeech({ onResult, lang = "es-MX" } = {}) {
     (text) => {
       if (!text || !("speechSynthesis" in window)) return;
       window.speechSynthesis.cancel();
+      // Safari iOS necesita que el motor siga activo tras el gesto inicial.
+      window.speechSynthesis.resume();
 
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = lang;
@@ -112,6 +114,22 @@ export function useSpeech({ onResult, lang = "es-MX" } = {}) {
     },
     [lang]
   );
+
+  const unlockAudio = useCallback(() => {
+    // Debe llamarse dentro de un gesto del usuario (tap/click). En Safari iOS
+    // desbloquea el hilo de audio para respuestas asíncronas posteriores.
+    if (!("speechSynthesis" in window)) return;
+    try {
+      window.speechSynthesis.resume();
+      const unlock = new SpeechSynthesisUtterance(" ");
+      unlock.lang = lang;
+      unlock.volume = 0;
+      unlock.rate = 1;
+      window.speechSynthesis.speak(unlock);
+    } catch {
+      /* noop */
+    }
+  }, [lang]);
 
   const cancelSpeech = useCallback(() => {
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
@@ -127,5 +145,6 @@ export function useSpeech({ onResult, lang = "es-MX" } = {}) {
     stop,
     speak,
     cancelSpeech,
+    unlockAudio,
   };
 }

@@ -105,6 +105,28 @@ def _current_rain_probability(payload: dict) -> int:
     return 0
 
 
+def _current_hourly_value(payload: dict, variable: str) -> float:
+    current = payload.get("current") or {}
+    hourly = payload.get("hourly") or {}
+    times = hourly.get("time") or []
+    values = hourly.get(variable) or []
+    current_hour = str(current.get("time") or "")[:13]
+
+    for time_value, value in zip(times, values):
+        if str(time_value)[:13] == current_hour:
+            try:
+                return float(value or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+
+    if values:
+        try:
+            return float(values[0] or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
+
+
 def _clamp_probability(value: int | float | None) -> int:
     try:
         return int(max(0, min(100, round(float(value or 0)))))
@@ -127,7 +149,7 @@ def _open_meteo_cached(
                 "temperature_2m,relative_humidity_2m,apparent_temperature,"
                 "precipitation,rain,weather_code,wind_speed_10m"
             ),
-            "hourly": "precipitation_probability",
+            "hourly": "precipitation_probability,uv_index",
             "forecast_days": 1,
             "timezone": "auto",
         },
@@ -144,6 +166,7 @@ def _open_meteo_cached(
     wind = round(float(current.get("wind_speed_10m") or 0), 1)
     condition, sky_state, emoji = _condition_for_code(current.get("weather_code"))
     rain_probability = _current_rain_probability(payload)
+    uv_index = round(max(0.0, _current_hourly_value(payload, "uv_index")), 1)
     logger.info(
         "Open-Meteo Weather resultado (%.5f, %.5f): %.1f°C, lluvia %s%%, %s",
         latitude,
@@ -162,6 +185,7 @@ def _open_meteo_cached(
         "sky_state": sky_state,
         "emoji": emoji,
         "rain_probability": rain_probability,
+        "uv_index": uv_index,
         "updated_at": datetime.now().astimezone(),
         "latitude": latitude,
         "longitude": longitude,
@@ -194,6 +218,14 @@ def _simulated_weather(
     if "lluvia" in condition.lower():
         rain_probability = max(rain_probability, 65)
 
+    daylight_uv = [0, 0, 0, 0, 0, 0, 0, 1, 3, 5, 7, 9, 10, 10, 9, 7, 5, 3, 1, 0, 0, 0, 0, 0]
+    uv_index = float(daylight_uv[max(0, min(23, local_hour))])
+    if "nublado" in sky_state.lower():
+        uv_index *= 0.6
+    if "lluvia" in condition.lower() or "tormenta" in condition.lower():
+        uv_index *= 0.4
+    uv_index = round(uv_index, 1)
+
     return {
         "location": city,
         "temperature": temperature,
@@ -204,6 +236,7 @@ def _simulated_weather(
         "sky_state": sky_state,
         "emoji": emoji,
         "rain_probability": rain_probability,
+        "uv_index": uv_index,
         "updated_at": now,
         "latitude": latitude,
         "longitude": longitude,
@@ -252,5 +285,5 @@ def get_weather_for_location(location: dict) -> dict:
 
 
 def get_weather_for_destination(location: dict) -> dict:
-    """Clima actual para un destino geocodificado (hotspot, Nominatim u Open-Meteo)."""
+    """Clima actual para un destino geocodificado dinámicamente."""
     return get_weather_for_location(location)
