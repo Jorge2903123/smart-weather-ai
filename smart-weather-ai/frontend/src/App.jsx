@@ -163,20 +163,34 @@ export default function App() {
   const viewData = useMemo(() => {
     const condition = conditionKey(weather);
     const points = forecast?.points ?? [];
-    const advice = loadingAssistant
-      ? "Consultando el clima para tu pregunta…"
-      : assistant?.answer ||
-        recommendations?.summary ||
-        "Revisa el pronóstico antes de salir.";
+    const isLoading = !weather;
+    const forecastSimulated = forecast?.source === "simulated";
+    const currentLive = weather?.data_source === "open-meteo";
+    const isLive = currentLive && !forecastSimulated;
+    const advice = isLoading
+      ? null
+      : loadingAssistant
+        ? "Consultando el clima para tu pregunta…"
+        : assistant?.answer ||
+          recommendations?.summary ||
+          "Revisa el pronóstico antes de salir.";
 
     return {
-      current_weather: {
-        temperature: weather?.temperature ?? 20,
-        condition,
-        humidity: weather?.humidity ?? 50,
-        wind_speed_kmh: Math.round(weather?.wind_kph ?? 10),
-        uv_index: Math.round(weather?.uv_index ?? 0),
+      is_loading: isLoading,
+      data_sources: {
+        weather: weather?.data_source ?? null,
+        forecast: forecast?.source ?? null,
+        is_live: isLive,
       },
+      current_weather: weather
+        ? {
+            temperature: weather.temperature,
+            condition,
+            humidity: weather.humidity,
+            wind_speed_kmh: Math.round(weather.wind_kph ?? 0),
+            uv_index: Math.round(weather.uv_index ?? 0),
+          }
+        : null,
       hourly_forecast: points.map((point) => {
         const rainProbability = point.rain_probability ?? 0;
         return {
@@ -191,6 +205,8 @@ export default function App() {
         is_valid: analysis?.is_valid ?? analysis?.status === "ok",
         sky_label: analysis?.sky_label ?? analysis?.label ?? null,
         message: analysis?.message ?? analysis?.description ?? null,
+        rain_probability: analysis?.rain_probability ?? null,
+        confidence: analysis?.confidence ?? null,
       },
       ai_recommendation: {
         actionable_advice: advice,

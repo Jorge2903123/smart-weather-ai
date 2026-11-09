@@ -26,9 +26,14 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
 
     # --- CORS ---------------------------------------------------------------
-    # En desarrollo se permite cualquier origen para evitar bloqueos desde
-    # Safari iOS / Expo / túneles (Cloudflare, Ngrok).
-    cors_origins: list[str] = ["*"]
+    # Allowlist explícita. Para túneles o pruebas en LAN se amplía con la
+    # variable CORS_ORIGINS (lista JSON) sin volver a "*".
+    cors_origins: list[str] = ["http://localhost:5173"]
+
+    # --- Admin --------------------------------------------------------------
+    # Token obligatorio para /api/admin/*. Si está vacío, el panel queda
+    # deshabilitado (todos los intentos responden 403).
+    admin_token: str | None = None
 
     # --- Modelos ------------------------------------------------------------
     # Ruta opcional a los pesos de la CNN (por ejemplo un .pt de PyTorch).

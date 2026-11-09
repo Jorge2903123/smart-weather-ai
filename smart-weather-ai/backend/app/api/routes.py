@@ -17,6 +17,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from starlette.concurrency import run_in_threadpool
 
 from app.config import settings
 from app.db import log_weather
@@ -124,7 +125,7 @@ async def analyze_sky(
         )
 
     try:
-        result = vision_model.analyze_sky_image(content)
+        result = await run_in_threadpool(vision_model.analyze_sky_image, content)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
@@ -133,7 +134,8 @@ async def analyze_sky(
     # Solo se persisten análisis válidos; las imágenes descartadas no ensucian
     # el historial ni las métricas.
     if result.get("status") != "invalid_image":
-        log_weather(
+        await run_in_threadpool(
+            log_weather,
             location=location,
             temperature=None,
             rain_probability=result.get("rain_probability"),

@@ -1,19 +1,22 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import AdminPanel from "./AdminPanel";
-
-const ADMIN_PIN = import.meta.env.VITE_ADMIN_PIN || "admin123";
+import { getAdminSummary } from "../services/api";
 
 export default function AdminModal({ open, onClose }) {
-  const [pin, setPin] = useState("");
+  const [tokenInput, setTokenInput] = useState("");
+  const [token, setToken] = useState("");
   const [authorized, setAuthorized] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [error, setError] = useState("");
+  const requestRef = useRef(0);
 
   useEffect(() => {
-    if (!open) {
-      setPin("");
-      setAuthorized(false);
-      setError("");
-    }
+    requestRef.current += 1;
+    setTokenInput("");
+    setToken("");
+    setAuthorized(false);
+    setChecking(false);
+    setError("");
   }, [open]);
 
   useEffect(() => {
@@ -27,13 +30,32 @@ export default function AdminModal({ open, onClose }) {
 
   if (!open) return null;
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     event.preventDefault();
-    if (pin === ADMIN_PIN) {
-      setAuthorized(true);
-      setError("");
-    } else {
+    const candidate = tokenInput.trim();
+    if (!candidate) {
       setError("PIN incorrecto.");
+      return;
+    }
+
+    const requestId = requestRef.current + 1;
+    requestRef.current = requestId;
+    setChecking(true);
+    setError("");
+    try {
+      await getAdminSummary(candidate);
+      if (requestRef.current !== requestId) return;
+      setToken(candidate);
+      setAuthorized(true);
+    } catch (err) {
+      if (requestRef.current !== requestId) return;
+      setError(
+        err.status === 401 || err.status === 403
+          ? "PIN incorrecto."
+          : err.message
+      );
+    } finally {
+      if (requestRef.current === requestId) setChecking(false);
     }
   }
 
@@ -79,14 +101,14 @@ export default function AdminModal({ open, onClose }) {
         </div>
 
         {authorized ? (
-          <AdminPanel />
+          <AdminPanel token={token} />
         ) : (
           <form
             onSubmit={handleSubmit}
             className="mx-auto mt-6 max-w-xs space-y-3"
           >
             <p className="text-center text-xs text-slate-500">
-              Introduce el PIN para acceder al historial.
+              Introduce el PIN o token para acceder al historial.
             </p>
             <input
               type="password"
@@ -94,16 +116,20 @@ export default function AdminModal({ open, onClose }) {
               autoCapitalize="off"
               autoCorrect="off"
               spellCheck={false}
-              value={pin}
-              onChange={(event) => setPin(event.target.value)}
-              placeholder="PIN de administrador"
+              value={tokenInput}
+              onChange={(event) => setTokenInput(event.target.value)}
+              placeholder="PIN o token de administrador"
               className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-center text-sm text-slate-800 outline-none placeholder:text-slate-400 focus:border-slate-400"
             />
             {error && (
               <p className="text-center text-xs text-rose-600">{error}</p>
             )}
-            <button type="submit" className="btn btn-primary w-full">
-              Ingresar
+            <button
+              type="submit"
+              disabled={checking}
+              className="btn btn-primary w-full disabled:opacity-60"
+            >
+              {checking ? "Verificando…" : "Ingresar"}
             </button>
           </form>
         )}

@@ -40,7 +40,7 @@ function StatCard({ label, value, hint }) {
   );
 }
 
-export default function AdminPanel() {
+export default function AdminPanel({ token }) {
   const [summary, setSummary] = useState(null);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -52,17 +52,21 @@ export default function AdminPanel() {
     setError("");
     try {
       const [nextSummary, nextHistory] = await Promise.all([
-        getAdminSummary(),
-        getAdminHistory(50),
+        getAdminSummary(token),
+        getAdminHistory(50, token),
       ]);
       setSummary(nextSummary);
       setHistory(nextHistory.items ?? []);
     } catch (err) {
-      setError(err.message);
+      setError(
+        err.status === 401 || err.status === 403
+          ? "Token de administrador inválido. Cierra y vuelve a ingresarlo."
+          : err.message
+      );
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [token]);
 
   useEffect(() => {
     load();
@@ -77,14 +81,18 @@ export default function AdminPanel() {
     setCleaning(true);
     setError("");
     try {
-      await cleanupLogs();
+      await cleanupLogs(token);
       await load();
     } catch (err) {
-      setError(err.message);
+      setError(
+        err.status === 401 || err.status === 403
+          ? "Token de administrador inválido. Cierra y vuelve a ingresarlo."
+          : err.message
+      );
     } finally {
       setCleaning(false);
     }
-  }, [load]);
+  }, [load, token]);
 
   const wettest = useMemo(() => summary?.wettest_days?.[0], [summary]);
 

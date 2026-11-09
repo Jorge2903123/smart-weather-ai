@@ -5,10 +5,11 @@ Se usan tanto para validar las peticiones como para documentar las respuestas
 en el Swagger autogenerado de FastAPI (/docs).
 """
 
+import json
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +93,26 @@ class AssistantAskRequest(BaseModel):
         default_factory=dict,
         description="Métricas actuales, salida de visión y pronóstico.",
     )
+
+    @field_validator("current_context")
+    @classmethod
+    def validate_current_context(cls, value: dict) -> dict:
+        if len(value) > 32:
+            raise ValueError("current_context no puede tener más de 32 claves.")
+
+        try:
+            serialized = json.dumps(
+                value,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("current_context debe ser serializable a JSON.") from exc
+
+        if len(serialized) > 8 * 1024:
+            raise ValueError("current_context supera el límite de 8 KB.")
+
+        return value
 
 
 class Recommendations(BaseModel):

@@ -25,6 +25,12 @@ export function useSpeech({ onResult, lang = "es-MX" } = {}) {
   }, [onResult]);
 
   useEffect(() => {
+    return () => {
+      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    };
+  }, []);
+
+  useEffect(() => {
     const SpeechRecognition =
       window.SpeechRecognition || window.webkitSpeechRecognition;
 

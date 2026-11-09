@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from "react";
+import { useSpeech } from "../hooks/useSpeech";
 import {
   ArrowRight,
   Camera,
@@ -86,28 +87,41 @@ export default function MainWeatherView({
   onOpenAdmin,
 }) {
   const [query, setQuery] = useState("");
-  const [speaking, setSpeaking] = useState(false);
-  const [listening, setListening] = useState(false);
   const [localPhoto, setLocalPhoto] = useState(null);
   const cameraRef = useRef(null);
   const galleryRef = useRef(null);
-  const recognitionRef = useRef(null);
+  const {
+    supported: speechSupported,
+    listening,
+    speaking,
+    error: speechError,
+    start: startListening,
+    stop: stopListening,
+    speak,
+    cancelSpeech,
+    unlockAudio,
+  } = useSpeech({
+    onResult: (text) => {
+      setQuery(text);
+      onAsk?.(text);
+    },
+  });
 
-  const current = data?.current_weather ?? {
-    temperature: 20,
-    condition: "partly_cloudy",
-    humidity: 50,
-    wind_speed_kmh: 10,
-    uv_index: 3,
-  };
+  const current = data?.current_weather ?? null;
   const forecast = data?.hourly_forecast ?? [];
   const vision = data?.vision_diagnosis ?? {};
   const ai = data?.ai_recommendation ?? {};
   const location = data?.location ?? {};
+  const isLive = Boolean(data?.data_sources?.is_live);
 
-  const condition = CONDITION[current.condition] ?? CONDITION.partly_cloudy;
+  const condition = CONDITION[current?.condition] ?? CONDITION.partly_cloudy;
   const ConditionIcon = condition.Icon;
   const preview = photoUrl || localPhoto;
+  const numericVisionRain = Number(vision.rain_probability);
+  const visionRain =
+    vision.rain_probability != null && Number.isFinite(numericVisionRain)
+      ? Math.round(numericVisionRain)
+      : null;
 
   const peak = useMemo(() => {
     if (!forecast.length) return null;
@@ -121,48 +135,27 @@ export default function MainWeatherView({
   };
 
   const toggleSpeech = () => {
-    if (!("speechSynthesis" in window)) return;
     if (speaking) {
-      window.speechSynthesis.cancel();
-      setSpeaking(false);
+      cancelSpeech();
       return;
     }
     const text = ai.speech_text || ai.actionable_advice || ai.summary;
     if (!text) return;
-    window.speechSynthesis.cancel();
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.lang = "es-MX";
-    utter.rate = 1;
-    utter.onend = () => setSpeaking(false);
-    utter.onerror = () => setSpeaking(false);
-    setSpeaking(true);
-    window.speechSynthesis.speak(utter);
+    unlockAudio();
+    speak(text);
   };
 
   const toggleMic = () => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) {
+    if (!speechSupported) {
       alert("Reconocimiento de voz no soportado directamente en este navegador. Usa el teclado.");
       return;
     }
+    unlockAudio();
     if (listening) {
-      recognitionRef.current?.stop();
-      setListening(false);
+      stopListening();
       return;
     }
-    const rec = new SR();
-    rec.lang = "es-MX";
-    rec.interimResults = false;
-    rec.onresult = (e) => {
-      const text = e.results[0][0].transcript;
-      setQuery(text);
-      onAsk?.(text);
-    };
-    rec.onend = () => setListening(false);
-    rec.onerror = () => setListening(false);
-    recognitionRef.current = rec;
-    setListening(true);
-    rec.start();
+    startListening();
   };
 
   const submitAsk = (e) => {
@@ -178,7 +171,7 @@ export default function MainWeatherView({
       className={`mx-auto flex h-[100dvh] w-full max-w-md flex-col overflow-hidden bg-gradient-to-b ${condition.gradient} pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]`}
     >
       <main className="flex-1 overflow-y-auto px-4 pb-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {/* Header / Ubicación & Acceso a Admin */}
+        {/* Cabecera / Ubicación & Acceso a Admin */}
         <header className="flex items-start justify-between pt-3">
           <div className={`flex items-start gap-1.5 ${condition.text}`}>
             <MapPin className="mt-0.5 h-4 w-4 shrink-0" />
@@ -195,9 +188,22 @@ export default function MainWeatherView({
             </div>
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="flex shrink-0 items-center gap-1.5 rounded-full bg-white/85 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 shadow-sm backdrop-blur">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
-              En vivo
+            <span
+              className={`flex shrink-0 items-center gap-1.5 rounded-full bg-white/85 px-2.5 py-1 text-[11px] font-semibold shadow-sm backdrop-blur ${
+                isLive ? "text-emerald-700" : "text-slate-600"
+              }`}
+              title={
+                isLive
+                  ? "Datos actuales de Open-Meteo"
+                  : "Pronóstico simulado o datos no disponibles"
+              }
+            >
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  isLive ? "animate-pulse bg-emerald-500" : "bg-slate-400"
+                }`}
+              />
+              {isLive ? "En vivo" : "Simulado"}
             </span>
             {onOpenAdmin && (
               <button
@@ -213,7 +219,8 @@ export default function MainWeatherView({
         </header>
 
         {/* Hero del Clima */}
-        <section className="mt-3 rounded-[28px] bg-white/90 p-5 shadow-xl shadow-black/5 backdrop-blur">
+        {current ? (
+          <section className="mt-3 rounded-[28px] bg-white/90 p-5 shadow-xl shadow-black/5 backdrop-blur">
           <div className="flex items-start justify-between">
             <div>
               <p className="text-[11px] font-bold tracking-[0.18em] text-slate-400">AHORA</p>
@@ -257,10 +264,25 @@ export default function MainWeatherView({
               <p className="text-[11px] text-slate-500">Radiación</p>
             </div>
           </div>
-        </section>
+          </section>
+        ) : (
+          <section className="mt-3 rounded-[28px] bg-white/90 p-5 shadow-xl shadow-black/5 backdrop-blur">
+            <p className="text-[11px] font-bold tracking-[0.18em] text-slate-400">AHORA</p>
+            <p className="mt-2 text-sm font-semibold text-slate-500">Cargando clima…</p>
+            <div className="mt-3 h-14 w-28 animate-pulse rounded-2xl bg-slate-200" />
+            <div className="mt-5 grid grid-cols-3 gap-2">
+              {[0, 1, 2].map((item) => (
+                <div
+                  key={item}
+                  className="h-20 animate-pulse rounded-2xl bg-slate-100"
+                />
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* Consejo Accionable */}
-        {ai.actionable_advice && (
+        {current && ai.actionable_advice && (
           <section className="mt-3 rounded-[28px] bg-slate-900 p-5 text-white shadow-xl shadow-black/10">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -335,15 +357,24 @@ export default function MainWeatherView({
               ) : (
                 <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 to-transparent p-3 pt-8">
                   <p className="text-sm font-semibold text-white">{vision.sky_label || "Cielo analizado"}</p>
-                  {peak && (
-                    <p className="text-xs text-white/85">
-                      {peak.rain_prob}% de lluvia estimada · pico a las {peak.time}
-                    </p>
-                  )}
+                  <p className="text-xs text-white/85">
+                    {visionRain != null
+                      ? `${visionRain}% de lluvia estimada por la foto`
+                      : peak
+                        ? `Pico del pronóstico: ${peak.rain_prob}% a las ${peak.time}`
+                        : "Análisis completado"}
+                    {visionRain != null && peak
+                      ? ` · pico ${peak.rain_prob}% a las ${peak.time}`
+                      : ""}
+                  </p>
                 </div>
               )}
               <span className="absolute left-3 top-3 rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-bold text-slate-800">
-                {vision.is_valid === false ? "Foto no válida" : "Foto + pronóstico real"}
+                {vision.is_valid === false
+                  ? "Foto no válida"
+                  : isLive
+                    ? "Foto + pronóstico real"
+                    : "Foto + pronóstico"}
               </span>
             </div>
           ) : (
@@ -419,9 +450,18 @@ export default function MainWeatherView({
             <Send className="h-5 w-5" />
           </button>
         </form>
-        <p className="mt-1.5 text-center text-[11px] text-white/70">
-          {listening ? "Escuchando… di a dónde vas" : "Pregunta por voz o texto: “¿Necesito paraguas hoy?”"}
-        </p>
+        {speechError ? (
+          <p
+            role="alert"
+            className="mx-auto mt-1.5 w-fit rounded-full bg-rose-600/90 px-2 py-1 text-center text-[11px] font-medium text-white"
+          >
+            {speechError}
+          </p>
+        ) : (
+          <p className="mt-1.5 text-center text-[11px] text-white/70">
+            {listening ? "Escuchando… di a dónde vas" : "Pregunta por voz o texto: “¿Necesito paraguas hoy?”"}
+          </p>
+        )}
       </footer>
     </div>
   );

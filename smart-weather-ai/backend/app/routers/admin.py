@@ -6,9 +6,13 @@ Prefijo: /api/admin
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+import secrets
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.security import APIKeyHeader
 from sqlalchemy import func, select
 
+from app.config import settings
 from app.db import SessionLocal, WeatherLog, cleanup_logs
 from app.schemas import (
     AdminCleanupResponse,
@@ -18,7 +22,37 @@ from app.schemas import (
     WeatherLogOut,
 )
 
-router = APIRouter(prefix="/api/admin", tags=["Admin"])
+_admin_token_header = APIKeyHeader(name="X-Admin-Token", auto_error=False)
+
+
+def require_admin_token(
+    token: str | None = Depends(_admin_token_header),
+) -> None:
+    """Valida el token de administrador en todas las rutas /api/admin/*."""
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token de administrador requerido.",
+            headers={"WWW-Authenticate": "X-Admin-Token"},
+        )
+
+    expected = (settings.admin_token or "").strip()
+    valid = bool(expected) and secrets.compare_digest(
+        token.strip().encode("utf-8"),
+        expected.encode("utf-8"),
+    )
+    if not valid:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Token de administrador inválido.",
+        )
+
+
+router = APIRouter(
+    prefix="/api/admin",
+    tags=["Admin"],
+    dependencies=[Depends(require_admin_token)],
+)
 
 
 @router.get("/summary", response_model=AdminSummaryResponse)

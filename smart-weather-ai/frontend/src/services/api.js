@@ -26,9 +26,25 @@ function toFriendlyError(error) {
     );
   }
   const detail = error.response.data?.detail;
-  return new Error(
-    typeof detail === "string" ? detail : "Ocurrió un error al procesar la solicitud."
+  const friendly = new Error(
+    typeof detail === "string"
+      ? detail
+      : Array.isArray(detail)
+        ? detail.map((item) => item.msg).filter(Boolean).join(" ")
+        : "Ocurrió un error al procesar la solicitud."
   );
+  friendly.status = error.response.status;
+  return friendly;
+}
+
+function adminConfig(token, config = {}) {
+  return {
+    ...config,
+    headers: {
+      ...(config.headers || {}),
+      "X-Admin-Token": token,
+    },
+  };
 }
 
 function locationParams({ lat, lon } = {}) {
@@ -88,27 +104,34 @@ export async function askAssistant(prompt, currentContext = {}) {
   }
 }
 
-export async function getAdminSummary() {
+export async function getAdminSummary(token = "") {
   try {
-    const { data } = await client.get("/admin/summary");
+    const { data } = await client.get("/admin/summary", adminConfig(token));
     return data;
   } catch (error) {
     throw toFriendlyError(error);
   }
 }
 
-export async function getAdminHistory(limit = 50) {
+export async function getAdminHistory(limit = 50, token = "") {
   try {
-    const { data } = await client.get("/admin/history", { params: { limit } });
+    const { data } = await client.get(
+      "/admin/history",
+      adminConfig(token, { params: { limit } })
+    );
     return data;
   } catch (error) {
     throw toFriendlyError(error);
   }
 }
 
-export async function cleanupLogs() {
+export async function cleanupLogs(token = "") {
   try {
-    const { data } = await client.post("/admin/cleanup");
+    const { data } = await client.post(
+      "/admin/cleanup",
+      null,
+      adminConfig(token)
+    );
     return data;
   } catch (error) {
     throw toFriendlyError(error);
